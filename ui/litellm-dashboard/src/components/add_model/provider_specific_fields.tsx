@@ -436,6 +436,30 @@ const PROVIDER_CREDENTIAL_FIELDS: Record<Providers, ProviderCredentialField[]> =
       required: true,
     },
   ],
+  [Providers.GigaChat]: [
+    {
+      key: "api_key",
+      label: "GigaChat Credentials",
+      type: "password",
+      required: false,
+    },
+    {
+      key: "user",
+      label: "GigaChat User",
+      required: false
+    },
+    {
+      key: "password",
+      label: "GigaChat password",
+      type: "password",
+      required: false
+    },
+    {
+      key: "scope",
+      label: "GigaChat scope",
+      required: false
+    },
+  ],
   [Providers.Perplexity]: [
     {
       key: "api_key",

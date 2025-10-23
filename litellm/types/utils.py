@@ -2483,6 +2483,7 @@ class LlmProviders(str, Enum):
     LAMBDA_AI = "lambda_ai"
     DEEPSEEK = "deepseek"
     SAMBANOVA = "sambanova"
+    GIGACHAT = "gigachat"
     MARITALK = "maritalk"
     VOYAGE = "voyage"
     CLOUDFLARE = "cloudflare"

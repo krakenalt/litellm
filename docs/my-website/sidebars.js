@@ -543,6 +543,7 @@ const sidebars = {
         "providers/baseten",
         "providers/openrouter",
         "providers/sambanova",
+        "providers/gigachat",
         "providers/custom_llm_server",
         "providers/petals",
         "providers/snowflake",

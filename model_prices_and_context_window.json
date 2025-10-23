@@ -19341,6 +19341,15 @@
         "mode": "completion",
         "output_cost_per_token": 0.0
     },
+    "gigachat/GigaChat-2": {
+        "input_cost_per_token": 0.00001,
+        "litellm_provider": "gigachat",
+        "max_input_tokens": 1280000,
+        "max_output_tokens": 1280000,
+        "max_tokens": 1280000,
+        "mode": "completion",
+        "output_cost_per_token": 0.000015
+    },
     "sagemaker/meta-textgeneration-llama-2-13b-f": {
         "input_cost_per_token": 0.0,
         "litellm_provider": "sagemaker",

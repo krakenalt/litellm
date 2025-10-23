@@ -322,6 +322,7 @@ LITELLM_CHAT_PROVIDERS = [
     "text-completion-codestral",
     "deepseek",
     "sambanova",
+    "gigachat",
     "maritalk",
     "cloudflare",
     "fireworks_ai",
