@@ -220,6 +220,7 @@ groq_key: Optional[str] = None
 databricks_key: Optional[str] = None
 openai_like_key: Optional[str] = None
 azure_key: Optional[str] = None
+gigachat_key: Optional[str] = None
 anthropic_key: Optional[str] = None
 replicate_key: Optional[str] = None
 bytez_key: Optional[str] = None
@@ -1251,6 +1252,8 @@ from .llms.cerebras.chat import CerebrasConfig
 from .llms.baseten.chat import BasetenConfig
 from .llms.sambanova.chat import SambanovaConfig
 from .llms.sambanova.embedding.transformation import SambaNovaEmbeddingConfig
+from .llms.gigachat.chat.transformation import GigaChatConfig
+from .llms.gigachat.embedding.transformation import GigaChatEmbeddingConfig
 from .llms.ai21.chat.transformation import AI21ChatConfig
 from .llms.fireworks_ai.chat.transformation import FireworksAIConfig
 from .llms.fireworks_ai.completion.transformation import FireworksAITextCompletionConfig

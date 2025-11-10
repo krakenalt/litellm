@@ -266,6 +266,10 @@ class GigaChatChatCompletion(BaseLLM):
             litellm_params=litellm_params,
         )
 
+        # Set default API base if not provided
+        if api_base is None:
+            api_base = litellm.get_secret_str("GIGACHAT_API_BASE") or "https://gigachat.devices.sberbank.ru/api/v1/chat/completions"
+
         config = ProviderConfigManager.get_provider_chat_config(
             model=model,
             provider=litellm.LlmProviders(custom_llm_provider),

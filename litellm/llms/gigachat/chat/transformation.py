@@ -1,18 +1,59 @@
-from typing import Optional, Tuple, Union, Type, List, Any
+import json
+from typing import Optional, Tuple, Union, Type, List, Any, TYPE_CHECKING, Dict
 
 import httpx
 from pydantic import BaseModel
 
+from litellm._uuid import uuid
 from litellm.llms.base_llm.base_utils import type_to_response_format_param
-from litellm.llms.base_llm.chat.transformation import BaseConfig
+from litellm.llms.base_llm.chat.transformation import BaseConfig, BaseLLMException
+from litellm.llms.custom_httpx.http_handler import headers
 from litellm.llms.openai.chat.gpt_transformation import OpenAIGPTConfig
 import litellm
 from litellm.secret_managers.main import get_secret_str
 from litellm.types.llms.openai import AllMessageValues
 from litellm.utils import ModelResponse
 
+if TYPE_CHECKING:
+    from litellm.litellm_core_utils.litellm_logging import Logging as _LiteLLMLoggingObj
+    from litellm.types.llms.openai import ChatCompletionToolParam
+
+    LiteLLMLoggingObj = _LiteLLMLoggingObj
+else:
+    LiteLLMLoggingObj = Any
 
 class GigaChatConfig(BaseConfig):
+    """
+    Configuration for GigaChat API integration.
+
+    Supports both direct API key authentication and OAuth flow.
+
+    Environment variables:
+    - GIGACHAT_API_KEY: Direct API key (fallback for OAuth)
+    - GIGACHAT_CREDENTIALS: Client credentials in format "client_id:client_secret" or single API key
+    - GIGACHAT_SCOPE: OAuth scope (default: GIGACHAT_API_PERS)
+    - GIGACHAT_USERNAME: Username for OAuth (alternative to credentials)
+    - GIGACHAT_PASSWORD: Password for OAuth (alternative to credentials)
+    - GIGACHAT_AUTH_URL: OAuth endpoint URL (default: https://ngw.devices.sberbank.ru:9443/api/v2/oauth)
+    - GIGACHAT_API_BASE: API base URL (default: https://gigachat.devices.sberbank.ru/api/v1/chat/completions)
+
+    Usage:
+        # Method 1: With credentials and scope
+        export GIGACHAT_CREDENTIALS="client_id:client_secret"
+        export GIGACHAT_SCOPE="GIGACHAT_API_PERS"
+
+        # Method 2: With username and password
+        export GIGACHAT_USERNAME="your_username"
+        export GIGACHAT_PASSWORD="your_password"
+        export GIGACHAT_SCOPE="GIGACHAT_API_PERS"
+
+        # Method 3: Direct API key (legacy)
+        export GIGACHAT_API_KEY="your_api_key"
+
+        # Custom URLs
+        export GIGACHAT_AUTH_URL="https://your-custom-auth.com/oauth"
+        export GIGACHAT_API_BASE="https://your-custom-api.com/v1"
+    """
 
     @property
     def custom_llm_provider(self) -> Optional[str]:
@@ -32,7 +73,7 @@ class GigaChatConfig(BaseConfig):
             "functions",
             "response_format",
         ]
-        if "reason" in model:
+        if "reason" in model.lower():
             params.append("reasoning_effort")
         return params
 
@@ -52,11 +93,15 @@ class GigaChatConfig(BaseConfig):
         if api_key is None:
             api_key = litellm.get_secret_str("GIGACHAT_API_KEY")
 
+        # If no API key, try to get one via OAuth
         if api_key is None:
-            raise ValueError("GIGACHAT_API_KEY not found in environment variables")
+            api_key = self._get_oauth_token()
+
+        if api_key is None:
+            raise ValueError("GIGACHAT_API_KEY not found and OAuth credentials not provided")
 
         if api_base is None:
-            api_base = "https://gigachat.devices.sberbank.ru/api/v1/chat/completions"
+            api_base = litellm.get_secret_str("GIGACHAT_API_BASE") or "https://gigachat.devices.sberbank.ru/api/v1/chat/completions"
 
         headers = {
             "Authorization": f"Bearer {api_key}",
@@ -65,6 +110,92 @@ class GigaChatConfig(BaseConfig):
         }
 
         return headers
+
+    def _get_oauth_token(self) -> Optional[str]:
+        """
+        Get OAuth token using credentials+scope or username+password
+        """
+        import litellm
+
+        auth_url = litellm.get_secret_str("GIGACHAT_AUTH_URL") or "https://ngw.devices.sberbank.ru:9443/api/v2/oauth"
+        print("AUTH URL", auth_url)
+        try:
+            import httpx
+            # Method 2: Using username and password
+            username = litellm.get_secret_str("GIGACHAT_USERNAME")
+            password = litellm.get_secret_str("GIGACHAT_PASSWORD")
+
+            if not username or not password:
+                # Method 1: Using credentials and scope
+                credentials = litellm.get_secret_str("GIGACHAT_CREDENTIALS") or litellm.get_secret_str(
+                    "GIGACHAT_API_KEY")
+                scope = litellm.get_secret_str("GIGACHAT_SCOPE") or "GIGACHAT_API_PERS"
+                auth_headers = {
+                    "User-Agent": "GigaChat-python-lib",
+                    "RqUID": str(uuid.uuid4())
+                }
+                if credentials:
+                    data = {
+                        "scope": scope
+                    }
+                    auth_headers.update({"Authorization": f"Basic {credentials}"})
+                    response = httpx.post(auth_url, headers=auth_headers, data=data, timeout=30, verify=False)
+                    response.raise_for_status()
+                    token = response.json()["access_token"]
+            else:
+                response = httpx.post(auth_url, auth=(username, password), timeout=30, verify=False)
+                response.raise_for_status()
+                token = response.json()["tok"]
+
+            return token
+
+        except Exception as e:
+            print(f"Failed to get OAuth token: {e}")
+            return None
+
+    def _transform_messages(self, messages: List[Dict]) -> List[Dict]:
+        """Трансформирует сообщения в формат GigaChat"""
+        transformed_messages = []
+        attachment_count = 0
+
+        for i, message in enumerate(messages):
+            print("MESSAGE NUMBER", i)
+            print(message)
+            #self.logger.debug(f"Processing message {i}: role={message.get('role')}")
+
+            # Удаляем неиспользуемые поля
+            message.pop("name", None)
+
+            # Преобразуем роли
+            if message["role"] == "developer":
+                message["role"] = "system"
+            elif message["role"] == "system" and i > 0:
+                message["role"] = "user"
+            elif message["role"] == "tool":
+                message["role"] = "function"
+                try:
+                    json.loads(message.get("content", ""))
+                except json.JSONDecodeError:
+                    message["content"] = json.dumps(
+                        message.get("content", ""), ensure_ascii=False
+                    )
+
+            # Обрабатываем контент
+            if message.get("content") is None:
+                message["content"] = ""
+
+            # Обрабатываем tool_calls
+            if "tool_calls" in message and message["tool_calls"]:
+                message["function_call"] = message["tool_calls"][0]["function"]
+                try:
+                    message["function_call"]["arguments"] = json.loads(
+                        message["function_call"]["arguments"]
+                    )
+                except json.JSONDecodeError as e:
+                    pass
+                    #self.logger.warning(f"Failed to parse function call arguments: {e}")
+            transformed_messages.append(message)
+        return transformed_messages
 
     def transform_request(
         self,
@@ -78,29 +209,19 @@ class GigaChatConfig(BaseConfig):
         Transform OpenAI-style request to GigaChat format
         """
         # Transform messages to GigaChat format
-        gigachat_messages = []
-        for message in messages:
-            if message.get("role") == "system":
-                # GigaChat might handle system messages differently
-                gigachat_messages.append({
-                    "role": "user",  # or "system" depending on API
-                    "content": message.get("content", "")
-                })
-            else:
-                gigachat_messages.append({
-                    "role": message.get("role", "user"),
-                    "content": message.get("content", "")
-                })
-
+        print("REQUEST PARAMS")
+        print(optional_params)
+        print(litellm_params)
+        gigachat_messages = self._transform_messages(messages)
+        print("GIGACHAT MESSAGES", gigachat_messages)
         # Build request body
         request_body = {
             "model": model,
             "messages": gigachat_messages,
         }
 
-        # Add optional parameters
         for param, value in optional_params.items():
-            if param == "max_tokens":
+            if param == "max_tokens" or param == "max_completion_tokens":
                 request_body["max_tokens"] = value
             elif param == "temperature":
                 request_body["temperature"] = value
@@ -108,63 +229,62 @@ class GigaChatConfig(BaseConfig):
                 request_body["top_p"] = value
             elif param == "stream":
                 request_body["stream"] = value
-            elif param == "functions":
-                request_body["functions"] = value
-            # Add other parameters as needed based on GigaChat API
-
+            elif param == "tools" or param == "functions":
+                gigachat_tools = self._construct_gigachat_tool(tools=optional_params["tools"])
+                request_body["functions"] = gigachat_tools
+            elif param == "response_format":
+                if value.get("json_schema") and value["json_schema"].get("schema"):
+                    request_body["response_format"] = {"type": "json_schema",
+                                                       **value["json_schema"]}
+        print(request_body)
         return request_body
 
+    def _process_function_call(self, message: dict):
+        arguments = json.dumps(
+            message["function_call"]["arguments"],
+            ensure_ascii=False,
+        )
+        function_call = {
+            "name": message["function_call"]["name"],
+            "arguments": arguments,
+        }
+        message["tool_calls"] = [
+            {
+                "id": f"call_{uuid.uuid4()}",
+                "type": "function",
+                "function": function_call,
+            }
+        ]
+        if message.get("finish_reason") == "function_call":
+            message["finish_reason"] = "tool_calls"
+
     def transform_response(
-        self,
-        model: str,
-        raw_response: httpx.Response,
-        model_response: ModelResponse,
-        logging_obj,
-        api_key: Optional[str],
-        request_data: dict,
-        messages: List[AllMessageValues],
-        optional_params: dict,
-        litellm_params: dict,
-        encoding: Any,
-        json_mode: Optional[bool] = None,
-    ) -> ModelResponse:
+            self,
+            model: str,
+            raw_response: httpx.Response,
+            model_response: "ModelResponse",
+            logging_obj: LiteLLMLoggingObj,
+            request_data: dict,
+            messages: List[AllMessageValues],
+            optional_params: dict,
+            litellm_params: dict,
+            encoding: Any,
+            api_key: Optional[str] = None,
+            json_mode: Optional[bool] = None,
+    ) -> "ModelResponse":
         """
         Transform GigaChat response to OpenAI format
         """
         try:
             response_json = raw_response.json()
+            message = response_json["choices"][0]["message"]
+            if "function_call" in message:
+                message["function_call"]["arguments"] = json.dumps(message["function_call"]["arguments"])
+                self._process_function_call(message)
         except Exception as e:
             raise ValueError(f"Failed to parse GigaChat response as JSON: {e}")
 
-        # Transform GigaChat response to OpenAI format
-        if "choices" in response_json:
-            # Already in OpenAI-like format
-            choices = response_json["choices"]
-        else:
-            # Transform from GigaChat format to OpenAI format
-            choices = [{
-                "message": {
-                    "role": "assistant",
-                    "content": response_json.get("content", ""),
-                },
-                "finish_reason": response_json.get("finish_reason", "stop"),
-                "index": 0,
-            }]
-
-        # Update model response
-        model_response.choices = [litellm.utils.convert_to_model_response_object(choice) for choice in choices]
-
-        if "usage" in response_json:
-            model_response.usage = litellm.utils.Usage(
-                prompt_tokens=response_json["usage"].get("prompt_tokens", 0),
-                completion_tokens=response_json["usage"].get("completion_tokens", 0),
-                total_tokens=response_json["usage"].get("total_tokens", 0),
-            )
-
-        model_response.model = model
-        model_response.created = response_json.get("created", 0)
-
-        return model_response
+        return ModelResponse(**response_json)
 
     def _construct_gigachat_tool(self, tools: Optional[list] = None):
         if tools is None:
@@ -214,7 +334,10 @@ class GigaChatConfig(BaseConfig):
             },
         }
         """
-        gigachat_tool = {**openai_tool["function"]}
+        gigachat_tool = openai_tool.copy()
+        if "function" in gigachat_tool:
+            gigachat_tool = gigachat_tool["function"]
+        gigachat_tool.pop("type", None)
 
         return gigachat_tool
 
@@ -248,11 +371,16 @@ class GigaChatConfig(BaseConfig):
                 and isinstance(value, dict)
                 and value.get("type") == "json_schema"
             ):
-                if value.get("json_schema") and value["json_schema"].get("schema"):
-                    optional_params["format"] = value["json_schema"]["schema"]
+                optional_params["response_format"] = value
             if param == "tools" or param == "functions":
-                gigachat_tools = self._construct_gigachat_tool(tools=optional_params["tools"])
-                optional_params["functions"] = gigachat_tools
+                optional_params["functions"] = value
 
         non_default_params.pop("tools", None)
+        non_default_params.pop("functions", None)
         return optional_params
+
+    def get_error_class(
+        self, error_message: str, status_code: int, headers: Union[dict, httpx.Headers]
+    ) -> BaseLLMException:
+        from ..common_utils import GigaChatError
+        return GigaChatError(status_code=status_code, message=error_message, headers=headers)
