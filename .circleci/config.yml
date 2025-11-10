@@ -532,7 +532,7 @@ jobs:
           command: |
             pwd
             ls
-            python -m pytest -vv tests/router_unit_tests --cov=litellm --cov-report=xml -x -s -v --junitxml=test-results/junit.xml --durations=5
+            python -m pytest -vv tests/router_unit_tests --cov=litellm --cov-report=xml -x -s --junitxml=test-results/junit.xml --durations=5
           no_output_timeout: 120m
       - run:
           name: Rename the coverage files
@@ -1164,7 +1164,7 @@ jobs:
           command: |
             pwd
             ls
-            python -m pytest -vv tests/test_litellm --cov=litellm --cov-report=xml -s -v --junitxml=test-results/junit-litellm.xml --durations=10 -n 8
+            python -m pytest -vv tests/test_litellm --cov=litellm --cov-report=xml -v --junitxml=test-results/junit-litellm.xml --durations=10 -n 8
           no_output_timeout: 120m
       - run:
           name: Rename the coverage files
@@ -1396,7 +1396,7 @@ jobs:
           command: |
             pwd
             ls
-            python -m pytest -vv tests/image_gen_tests --cov=litellm --cov-report=xml -x -s -v --junitxml=test-results/junit.xml --durations=5
+            python -m pytest -vv tests/image_gen_tests --cov=litellm --cov-report=xml -x -v --junitxml=test-results/junit.xml --durations=5
           no_output_timeout: 120m
       - run:
           name: Rename the coverage files
@@ -1709,6 +1709,7 @@ jobs:
             pip install "pytest==7.3.1"
             pip install "pytest-asyncio==0.21.1"
             pip install aiohttp
+            pip install apscheduler
       - run:
           name: Build Docker image
           command: |
@@ -2609,6 +2610,7 @@ jobs:
             pip install "pytest-mock==3.12.0"
             pip install "pytest-asyncio==0.21.1"
             pip install "mypy==1.18.2"
+            pip install apscheduler
       - run:
           name: Build Docker image
           command: |
@@ -2762,8 +2764,8 @@ jobs:
               -e GEMINI_API_KEY=$GEMINI_API_KEY \
               -e ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY \
               -e ASSEMBLYAI_API_KEY=$ASSEMBLYAI_API_KEY \
-              -e AZURE_API_KEY_PASSHROUGH=$AZURE_API_KEY_PASSHROUGH \
-              -e AZURE_API_BASE_PASSHROUGH=$AZURE_API_BASE_PASSHROUGH \
+              -e AZURE_API_KEY=$AZURE_API_KEY \
+              -e AZURE_API_BASE=$AZURE_API_BASE \
               -e USE_DDTRACE=True \
               -e DD_API_KEY=$DD_API_KEY \
               -e DD_SITE=$DD_SITE \
