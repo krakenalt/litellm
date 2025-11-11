@@ -1,6 +1,10 @@
+import base64
+import hashlib
+import io
 import json
+import re
+import time
 from typing import Optional, Tuple, Union, Type, List, Any, TYPE_CHECKING, Dict
-
 import httpx
 from pydantic import BaseModel
 
@@ -54,6 +58,10 @@ class GigaChatConfig(BaseConfig):
         export GIGACHAT_AUTH_URL="https://your-custom-auth.com/oauth"
         export GIGACHAT_API_BASE="https://your-custom-api.com/v1"
     """
+
+    def __init__(self):
+        super().__init__()
+        self._token_cache: dict[str, Any] = {"token": None, "expires_at": 0}
 
     @property
     def custom_llm_provider(self) -> Optional[str]:
@@ -111,58 +119,82 @@ class GigaChatConfig(BaseConfig):
 
         return headers
 
+    def _is_token_expired(self) -> bool:
+        """Check if cached OAuth token is expired or missing."""
+        now = time.time()
+        return not self._token_cache["token"] or now >= self._token_cache["expires_at"]
+
     def _get_oauth_token(self) -> Optional[str]:
         """
-        Get OAuth token using credentials+scope or username+password
+        Get or refresh OAuth token using either:
+        - username/password (returns tok + exp)
+        - client credentials (returns access_token + expires_at)
         """
+
+        # Reuse cached token if valid
+        if not self._is_token_expired():
+            return self._token_cache["token"]
+
+        import httpx
         import litellm
 
-        auth_url = litellm.get_secret_str("GIGACHAT_AUTH_URL") or "https://ngw.devices.sberbank.ru:9443/api/v2/oauth"
-        print("AUTH URL", auth_url)
+        auth_url = litellm.get_secret_str("GIGACHAT_AUTH_URL") or \
+                   "https://ngw.devices.sberbank.ru:9443/api/v2/oauth"
+
         try:
-            import httpx
-            # Method 2: Using username and password
             username = litellm.get_secret_str("GIGACHAT_USERNAME")
             password = litellm.get_secret_str("GIGACHAT_PASSWORD")
+            scope = litellm.get_secret_str("GIGACHAT_SCOPE") or "GIGACHAT_API_PERS"
+            credentials = litellm.get_secret_str("GIGACHAT_CREDENTIALS")
 
-            if not username or not password:
-                # Method 1: Using credentials and scope
-                credentials = litellm.get_secret_str("GIGACHAT_CREDENTIALS") or litellm.get_secret_str(
-                    "GIGACHAT_API_KEY")
-                scope = litellm.get_secret_str("GIGACHAT_SCOPE") or "GIGACHAT_API_PERS"
-                auth_headers = {
-                    "User-Agent": "GigaChat-python-lib",
-                    "RqUID": str(uuid.uuid4())
-                }
-                if credentials:
-                    data = {
-                        "scope": scope
-                    }
-                    auth_headers.update({"Authorization": f"Basic {credentials}"})
-                    response = httpx.post(auth_url, headers=auth_headers, data=data, timeout=30, verify=False)
-                    response.raise_for_status()
-                    token = response.json()["access_token"]
-            else:
-                response = httpx.post(auth_url, auth=(username, password), timeout=30, verify=False)
+            if username and password:
+                # Username/password OAuth flow
+                response = httpx.post(
+                    auth_url,
+                    auth=(username, password),
+                    timeout=30,
+                    verify=False,
+                )
                 response.raise_for_status()
-                token = response.json()["tok"]
+                data = response.json()
+                token = data.get("tok")
+                expires_at = float(data.get("exp", 0))
+
+            else:
+                # Client credentials flow
+                if not credentials:
+                    raise ValueError("Missing GIGACHAT_CREDENTIALS or username/password")
+                headers = {
+                    "User-Agent": "GigaChat-python-lib",
+                    "RqUID": str(uuid.uuid4()),
+                    "Authorization": f"Basic {credentials}",
+                }
+                data = {"scope": scope}
+                response = httpx.post(auth_url, headers=headers, data=data, timeout=30, verify=False)
+                response.raise_for_status()
+                data = response.json()
+                token = data.get("access_token")
+                expires_at = float(data.get("expires_at", 0))
+
+            if not token:
+                raise ValueError("OAuth did not return a token")
+
+            # Cache the token
+            self._token_cache["token"] = token
+            self._token_cache["expires_at"] = expires_at or (time.time() + 3600)
 
             return token
 
         except Exception as e:
-            print(f"Failed to get OAuth token: {e}")
+            print(f"[GigaChat] OAuth token fetch failed: {e}")
             return None
 
-    def _transform_messages(self, messages: List[Dict]) -> List[Dict]:
+    def _transform_messages(self, messages: List[Dict], headers: dict) -> List[Dict]:
         """Трансформирует сообщения в формат GigaChat"""
         transformed_messages = []
         attachment_count = 0
 
         for i, message in enumerate(messages):
-            print("MESSAGE NUMBER", i)
-            print(message)
-            #self.logger.debug(f"Processing message {i}: role={message.get('role')}")
-
             # Удаляем неиспользуемые поля
             message.pop("name", None)
 
@@ -194,8 +226,86 @@ class GigaChatConfig(BaseConfig):
                 except json.JSONDecodeError as e:
                     pass
                     #self.logger.warning(f"Failed to parse function call arguments: {e}")
+            if isinstance(message["content"], list):
+                texts, attachments = self._process_content_parts(message["content"], headers)
+                message["content"] = "\n".join(texts)
+                message["attachments"] = attachments
+                attachment_count += len(attachments)
+
             transformed_messages.append(message)
+        if attachment_count > 10:
+            self._limit_attachments(transformed_messages)
         return transformed_messages
+
+    def upload_image(self, image_url: str, headers: dict) -> Optional[str]:
+        """Загружает изображение в GigaChat и возвращает file_id"""
+        base64_matches = re.search(r"data:(.+);(.+),(.+)", image_url)
+        hashed = hashlib.sha256(image_url.encode()).hexdigest()
+        try:
+            if not base64_matches:
+                #self.logger.info(f"Downloading image from URL: {image_url[:100]}...")
+                response = httpx.get(image_url, timeout=30)
+                content_type = response.headers.get("content-type", "")
+                content_bytes = response.content
+
+                if not content_type.startswith("image/"):
+                    #self.logger.warning(
+                    #    f"Invalid content type for image: {content_type}"
+                    #)
+                    return None
+            else:
+                content_type, type_, image_str = base64_matches.groups()
+                if type_ != "base64":
+                    #self.logger.warning(f"Unsupported encoding type: {type_}")
+                    return None
+                content_bytes = base64.b64decode(image_str)
+                #self.logger.debug("Decoded base64 image")
+
+            print(content_bytes)
+            # Конвертируем и сжимаем изображение
+            # image = Image.open(io.BytesIO(content_bytes)).convert("RGB")
+            # buf = io.BytesIO()
+            # image.save(buf, format="JPEG", quality=85)
+            # buf.seek(0)
+
+            #self.logger.info("Uploading image to GigaChat...")
+            httpx.post(file=(f"{uuid.uuid4()}.jpg", content_bytes))
+            #file = self.giga.upload_file((f"{uuid.uuid4()}.jpg", content_bytes))
+            #self.logger.info(f"Image uploaded successfully, file_id: {file.id_}")
+            #return file.id_
+        except:
+            pass
+
+    def _process_content_parts(
+            self, content_parts: List[Dict], headers: dict
+    ) -> Tuple[List[str], List[str]]:
+        """Обрабатывает части контента (текст и изображения)"""
+        texts = []
+        attachments = []
+
+        for content_part in content_parts:
+            if content_part.get("type") == "text":
+                texts.append(content_part.get("text", ""))
+            elif (
+                    content_part.get("type") == "image_url"
+                    and content_part.get("image_url")
+            ):
+                file_id = self.upload_image(
+                    content_part["image_url"]["url"],
+                    headers
+                )
+                if file_id:
+                    attachments.append(file_id)
+                    #self.logger.info(f"Added attachment: {file_id}")
+
+        # Ограничиваем количество изображений
+        if len(attachments) > 2:
+            #self.logger.warning(
+            #    "GigaChat can only handle 2 images per message. Cutting off excess."
+            #)
+            attachments = attachments[:2]
+
+        return texts, attachments
 
     def transform_request(
         self,
@@ -209,11 +319,7 @@ class GigaChatConfig(BaseConfig):
         Transform OpenAI-style request to GigaChat format
         """
         # Transform messages to GigaChat format
-        print("REQUEST PARAMS")
-        print(optional_params)
-        print(litellm_params)
-        gigachat_messages = self._transform_messages(messages)
-        print("GIGACHAT MESSAGES", gigachat_messages)
+        gigachat_messages = self._transform_messages(messages, headers)
         # Build request body
         request_body = {
             "model": model,
@@ -236,7 +342,6 @@ class GigaChatConfig(BaseConfig):
                 if value.get("json_schema") and value["json_schema"].get("schema"):
                     request_body["response_format"] = {"type": "json_schema",
                                                        **value["json_schema"]}
-        print(request_body)
         return request_body
 
     def _process_function_call(self, message: dict):
