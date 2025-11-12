@@ -3654,7 +3654,6 @@ def completion(  # type: ignore # noqa: PLR0915
                 encoding=encoding,
                 stream=stream,
                 provider_config=gigachat_chat_transformation,
-                fake_stream=True
             )
 
             pass
