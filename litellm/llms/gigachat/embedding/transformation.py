@@ -195,7 +195,6 @@ class GigaChatEmbeddingConfig(BaseEmbeddingConfig):
         """
         try:
             response_json = raw_response.json()
-            print(response_json)
         except Exception as e:
             raise ValueError(
                 f"Failed to parse GigaChat embedding response as JSON: {raw_response.text}, Error: {str(e)}"
