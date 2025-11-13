@@ -166,8 +166,6 @@ from .llms.bytez.chat.transformation import BytezChatConfig
 from .llms.clarifai.chat.transformation import ClarifaiConfig
 from .llms.codestral.completion.handler import CodestralTextCompletion
 from .llms.cohere.embed import handler as cohere_embed
-from .llms.gigachat.chat.handler import GigaChatChatCompletion
-from .llms.gigachat.embedding.handler import GigaChatEmbedding
 from .llms.custom_httpx.aiohttp_handler import BaseLLMAIOHTTPHandler
 from .llms.custom_httpx.llm_http_handler import BaseLLMHTTPHandler
 from .llms.custom_llm import CustomLLM, custom_chat_llm_router
@@ -291,8 +289,6 @@ ovhcloud_transformation = OVHCloudChatConfig()
 lemonade_transformation = LemonadeChatConfig()
 gigachat_chat_transformation = GigaChatConfig()
 gigachat_embedding_transformation = GigaChatEmbeddingConfig()
-gigachat_chat_completion = GigaChatChatCompletion()
-gigachat_embedding = GigaChatEmbedding()
 
 MOCK_RESPONSE_TYPE = Union[str, Exception, dict, ModelResponse, ModelResponseStream]
 ####### COMPLETION ENDPOINTS ################
