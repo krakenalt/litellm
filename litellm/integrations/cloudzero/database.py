@@ -49,9 +49,9 @@ class LiteLLMDatabase:
         # Build WHERE clause for time filtering
         where_conditions = []
         if start_time_utc:
-            where_conditions.append(f"dus.created_at >= '{start_time_utc.isoformat()}'")
+            where_conditions.append(f"dus.updated_at >= '{start_time_utc.isoformat()}'")
         if end_time_utc:
-            where_conditions.append(f"dus.created_at <= '{end_time_utc.isoformat()}'")
+            where_conditions.append(f"dus.updated_at <= '{end_time_utc.isoformat()}'")
 
         where_clause = ""
         if where_conditions:

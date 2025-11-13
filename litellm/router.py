@@ -4473,6 +4473,19 @@ class Router:
                 break
         return fallback_model_group
 
+    def _get_first_default_fallback(self) -> Optional[str]:
+        """
+        Returns the first model from the default_fallbacks list, if it exists.
+        """
+        if self.fallbacks is None:
+            return None
+        for fallback in self.fallbacks:
+            if isinstance(fallback, dict) and "*" in fallback:
+                default_list = fallback["*"]
+                if isinstance(default_list, list) and len(default_list) > 0:
+                    return default_list[0]
+        return None
+
     def _time_to_sleep_before_retry(
         self,
         e: Exception,
@@ -7160,20 +7173,33 @@ class Router:
         )
 
         if len(healthy_deployments) == 0:
-            if self.get_model_list(model_name=model) is None:
-                message = f"You passed in model={model}. There is no 'model_name' with this string".format(
-                    model
-                )
-            else:
-                message = f"You passed in model={model}. There are no healthy deployments for this model".format(
-                    model
-                )
+            # Check for default fallbacks if no deployments are found for the requested model
+            if self._has_default_fallbacks():
+                fallback_model = self._get_first_default_fallback()
+                if fallback_model:
+                    verbose_router_logger.info(
+                        f"Model '{model}' not found. Attempting to use default fallback model '{fallback_model}'."
+                    )
+                    # Re-assign model to the fallback and try to get deployments again
+                    model = fallback_model
+                    healthy_deployments = self._get_all_deployments(model_name=model)
 
-            raise litellm.BadRequestError(
-                message=message,
-                model=model,
-                llm_provider="",
-            )
+            # If still no deployments after checking for fallbacks, raise an error
+            if len(healthy_deployments) == 0:
+                if self.get_model_list(model_name=model) is None:
+                    message = f"You passed in model={model}. There is no 'model_name' with this string".format(
+                        model
+                    )
+                else:
+                    message = f"You passed in model={model}. There are no healthy deployments for this model".format(
+                        model
+                    )
+
+                raise litellm.BadRequestError(
+                    message=message,
+                    model=model,
+                    llm_provider="",
+                )
 
         if litellm.model_alias_map and model in litellm.model_alias_map:
             model = litellm.model_alias_map[

@@ -4,6 +4,7 @@ from typing import TYPE_CHECKING, Any, List, Optional, cast
 
 import litellm
 from litellm._logging import verbose_logger
+from litellm.constants import CLOUDZERO_EXPORT_INTERVAL_MINUTES
 from litellm.integrations.custom_logger import CustomLogger
 
 if TYPE_CHECKING:
@@ -84,7 +85,10 @@ class CloudZeroLogger(CustomLogger):
         from litellm.constants import CLOUDZERO_MAX_FETCHED_DATA_RECORDS
 
         current_time_utc = datetime.now(timezone.utc)
-        one_hour_ago_utc = current_time_utc - timedelta(hours=1)
+        # Mitigates the possibility of missing spend if an hour is skipped due to a restart in an ephemeral environment
+        one_hour_ago_utc = current_time_utc - timedelta(
+            minutes=CLOUDZERO_EXPORT_INTERVAL_MINUTES * 2
+        )
         await self.export_usage_data(
             limit=CLOUDZERO_MAX_FETCHED_DATA_RECORDS,
             operation="replace_hourly",
