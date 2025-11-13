@@ -224,61 +224,54 @@ class GigaChatConfig(BaseConfig):
             or "https://ngw.devices.sberbank.ru:9443/api/v2/oauth"
         )
 
-        try:
-            username = litellm.get_secret_str("GIGACHAT_USERNAME")
-            password = litellm.get_secret_str("GIGACHAT_PASSWORD")
-            scope = litellm.get_secret_str("GIGACHAT_SCOPE") or "GIGACHAT_API_PERS"
-            credentials = litellm.get_secret_str("GIGACHAT_CREDENTIALS")
+        username = litellm.get_secret_str("GIGACHAT_USERNAME")
+        password = litellm.get_secret_str("GIGACHAT_PASSWORD")
+        scope = litellm.get_secret_str("GIGACHAT_SCOPE") or "GIGACHAT_API_PERS"
+        credentials = litellm.get_secret_str("GIGACHAT_CREDENTIALS")
 
-            if username and password:
-                # Username/password OAuth flow
-                response = httpx.post(
-                    auth_url,
-                    auth=(username, password),
-                    timeout=30,
-                    verify=False,
-                )
-                response.raise_for_status()
-                data = response.json()
-                token = data.get("tok")
-                expires_at = float(data.get("exp", 0))
+        if username and password:
+            # Username/password OAuth flow
+            response = httpx.post(
+                auth_url,
+                auth=(username, password),
+                timeout=30,
+                verify=False,
+            )
+            response.raise_for_status()
+            data = response.json()
+            token = data.get("tok")
+            expires_at = float(data.get("exp", 0))
 
-            else:
-                # Client credentials flow
-                if not credentials:
-                    raise ValueError(
-                        "Missing GIGACHAT_CREDENTIALS or username/password"
-                    )
-                headers = {
-                    "User-Agent": "GigaChat-python-lib",
-                    "RqUID": str(uuid.uuid4()),
-                    "Authorization": f"Basic {credentials}",
-                }
-                data = {"scope": scope}
-                print(data)
-                print(credentials)
-                response = httpx.post(
-                    auth_url, headers=headers, data=data, timeout=30, verify=False
-                )
-                response.raise_for_status()
-                data = response.json()
-                token = data.get("access_token")
-                expires_at = float(data.get("expires_at", 0))
+        else:
+            # Client credentials flow
+            if not credentials:
+                raise ValueError("Missing GIGACHAT_CREDENTIALS or username/password")
+            headers = {
+                "User-Agent": "GigaChat-python-lib",
+                "RqUID": str(uuid.uuid4()),
+                "Authorization": f"Basic {credentials}",
+            }
+            data = {"scope": scope}
+            response = httpx.post(
+                auth_url, headers=headers, data=data, timeout=30, verify=False
+            )
+            response.raise_for_status()
+            data = response.json()
+            token = data.get("access_token")
+            expires_at = float(data.get("expires_at", 0))
 
-            if not token:
-                raise ValueError("OAuth did not return a token")
+        if not token:
+            raise ValueError("OAuth did not return a token")
 
-            # Cache the token
-            self._token_cache["token"] = token
-            self._token_cache["expires_at"] = expires_at or (time.time() + 1800)
+        # Cache the token
+        self._token_cache["token"] = token
+        self._token_cache["expires_at"] = expires_at or (time.time() + 1800)
 
-            return token
+        return token
 
-        except Exception as e:
-            print(f"[GigaChat] OAuth token fetch failed: {e}")
-            return None
-
-    def _transform_messages(self, messages: List[Dict], headers: dict) -> List[Dict]:
+    def _transform_messages(
+        self, messages: List[AllMessageValues], headers: dict
+    ) -> List[Dict]:
         """Transforms messages to GigaChat format."""
         transformed_messages = []
         attachment_count = 0
