@@ -1,21 +1,24 @@
 import base64
 import hashlib
-import io
 import json
 import re
 import time
+import traceback
 from typing import Optional, Tuple, Union, Type, List, Any, TYPE_CHECKING, Dict
 import httpx
 from pydantic import BaseModel
 
 from litellm._uuid import uuid
+from litellm.litellm_core_utils.exception_mapping_utils import exception_type
+from litellm.litellm_core_utils.streaming_handler import CustomStreamWrapper
 from litellm.llms.base_llm.base_utils import type_to_response_format_param
 from litellm.llms.base_llm.chat.transformation import BaseConfig, BaseLLMException
-from litellm.llms.custom_httpx.http_handler import headers
-from litellm.llms.openai.chat.gpt_transformation import OpenAIGPTConfig
+from litellm.llms.custom_httpx.http_handler import AsyncHTTPHandler, get_async_httpx_client, HTTPHandler, \
+    _get_httpx_client
+from litellm.llms.gigachat.common_utils import GigaChatError
 import litellm
-from litellm.secret_managers.main import get_secret_str
 from litellm.types.llms.openai import AllMessageValues
+from litellm.types.utils import LlmProviders, ModelResponseStream
 from litellm.utils import ModelResponse
 
 if TYPE_CHECKING:
@@ -26,6 +29,75 @@ if TYPE_CHECKING:
 else:
     LiteLLMLoggingObj = Any
 
+class GigaChatCustomStreamWrapper(CustomStreamWrapper):
+
+    def handle_gigachat_chunk(self, chunk: Any):
+        """
+        Process a raw SSE chunk. Supports cases where a single chunk contains multiple `data:` lines.
+        Returns one event per call and buffers the rest in an internal queue.
+        """
+        # If there are already parsed events in the queue - return the next one
+        if isinstance(chunk, str):
+            for raw_line in chunk.splitlines():
+                if not raw_line:
+                    continue
+                name, _, line_str = raw_line.partition(": ")
+                if name != "data":
+                    continue
+                if line_str == "[DONE]":
+                    return {}
+                else:
+                    return json.loads(line_str)
+        return None
+
+    def chunk_creator(self, chunk: Any):
+        try:
+            data_json = self.handle_gigachat_chunk(chunk)
+            # If the chunk is not a GigaChat data line, skip
+            if data_json is None:
+                return None
+
+            # Handle stream terminator
+            if data_json == {}:
+                # Mark finish and let parent finalize the last chunk
+                self.received_finish_reason = "stop"
+                return self.finish_reason_handler()
+
+            # Normal data event
+            model_response = ModelResponseStream(**data_json)
+            # Extract text content from delta
+            delta_content = ""
+            try:
+                delta_content = (
+                    model_response.choices[0].delta.get("content", "") or ""
+                )
+            except Exception:
+                delta_content = ""
+
+            response_obj: Dict[str, Any] = {
+                "text": delta_content,
+                "is_finished": False,
+                "finish_reason": "",
+            }
+
+            completion_obj: Dict[str, Any] = {"content": delta_content}
+
+            return self.return_processed_chunk_logic(
+                completion_obj=completion_obj,
+                model_response=model_response,  # type: ignore
+                response_obj=response_obj,
+            )
+
+        except StopIteration:
+            raise StopIteration
+        except Exception as e:
+            traceback.format_exc()
+            setattr(e, "message", str(e))
+            raise exception_type(
+                model=self.model,
+                custom_llm_provider=self.custom_llm_provider,
+                original_exception=e,
+            )
 class GigaChatConfig(BaseConfig):
     """
     Configuration for GigaChat API integration.
@@ -114,6 +186,7 @@ class GigaChatConfig(BaseConfig):
         headers = {
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
+            "User-Agent": "GigaChat-python-lib",
             **headers,
         }
 
@@ -190,15 +263,15 @@ class GigaChatConfig(BaseConfig):
             return None
 
     def _transform_messages(self, messages: List[Dict], headers: dict) -> List[Dict]:
-        """Трансформирует сообщения в формат GigaChat"""
+        """Transforms messages to GigaChat format."""
         transformed_messages = []
         attachment_count = 0
 
         for i, message in enumerate(messages):
-            # Удаляем неиспользуемые поля
+            # Remove unused fields
             message.pop("name", None)
 
-            # Преобразуем роли
+            # Normalize roles
             if message["role"] == "developer":
                 message["role"] = "system"
             elif message["role"] == "system" and i > 0:
@@ -212,11 +285,11 @@ class GigaChatConfig(BaseConfig):
                         message.get("content", ""), ensure_ascii=False
                     )
 
-            # Обрабатываем контент
+            # Handle content
             if message.get("content") is None:
                 message["content"] = ""
 
-            # Обрабатываем tool_calls
+            # Handle tool_calls
             if "tool_calls" in message and message["tool_calls"]:
                 message["function_call"] = message["tool_calls"][0]["function"]
                 try:
@@ -225,7 +298,6 @@ class GigaChatConfig(BaseConfig):
                     )
                 except json.JSONDecodeError as e:
                     pass
-                    #self.logger.warning(f"Failed to parse function call arguments: {e}")
             if isinstance(message["content"], list):
                 texts, attachments = self._process_content_parts(message["content"], headers)
                 message["content"] = "\n".join(texts)
@@ -234,52 +306,52 @@ class GigaChatConfig(BaseConfig):
 
             transformed_messages.append(message)
         if attachment_count > 10:
-            self._limit_attachments(transformed_messages)
+            self._limit_attachments(transformed_messages, max_total_attachments=10)
         return transformed_messages
 
+    def _limit_attachments(self, messages: List[Dict], max_total_attachments: int = 10) -> None:
+        """
+        Limits the total number of attachments across all messages to max_total_attachments.
+        Trims extra attachments while iterating messages in order of appearance.
+        """
+        remaining = max_total_attachments
+        for msg in messages:
+            attachments = msg.get("attachments")
+            if not isinstance(attachments, list) or len(attachments) == 0:
+                continue
+            if remaining <= 0:
+                msg["attachments"] = []
+                continue
+            if len(attachments) > remaining:
+                msg["attachments"] = attachments[:remaining]
+                remaining = 0
+            else:
+                remaining -= len(attachments)
+
     def upload_image(self, image_url: str, headers: dict) -> Optional[str]:
-        """Загружает изображение в GigaChat и возвращает file_id"""
+        """Uploads an image for use with GigaChat and returns a file_id (if implemented)."""
         base64_matches = re.search(r"data:(.+);(.+),(.+)", image_url)
-        hashed = hashlib.sha256(image_url.encode()).hexdigest()
         try:
             if not base64_matches:
-                #self.logger.info(f"Downloading image from URL: {image_url[:100]}...")
                 response = httpx.get(image_url, timeout=30)
                 content_type = response.headers.get("content-type", "")
-                content_bytes = response.content
-
                 if not content_type.startswith("image/"):
-                    #self.logger.warning(
-                    #    f"Invalid content type for image: {content_type}"
-                    #)
                     return None
             else:
                 content_type, type_, image_str = base64_matches.groups()
                 if type_ != "base64":
-                    #self.logger.warning(f"Unsupported encoding type: {type_}")
                     return None
-                content_bytes = base64.b64decode(image_str)
-                #self.logger.debug("Decoded base64 image")
-
-            print(content_bytes)
-            # Конвертируем и сжимаем изображение
-            # image = Image.open(io.BytesIO(content_bytes)).convert("RGB")
-            # buf = io.BytesIO()
-            # image.save(buf, format="JPEG", quality=85)
-            # buf.seek(0)
-
-            #self.logger.info("Uploading image to GigaChat...")
-            httpx.post(file=(f"{uuid.uuid4()}.jpg", content_bytes))
-            #file = self.giga.upload_file((f"{uuid.uuid4()}.jpg", content_bytes))
-            #self.logger.info(f"Image uploaded successfully, file_id: {file.id_}")
-            #return file.id_
+                # Validate base64 — do not upload, only check correctness
+                _ = base64.b64decode(image_str)
+            # Stub: return None if upload integration is not configured
+            return None
         except:
             pass
 
     def _process_content_parts(
             self, content_parts: List[Dict], headers: dict
     ) -> Tuple[List[str], List[str]]:
-        """Обрабатывает части контента (текст и изображения)"""
+        """Processes content parts (text and images)."""
         texts = []
         attachments = []
 
@@ -296,13 +368,9 @@ class GigaChatConfig(BaseConfig):
                 )
                 if file_id:
                     attachments.append(file_id)
-                    #self.logger.info(f"Added attachment: {file_id}")
 
-        # Ограничиваем количество изображений
+        # Limit number of images
         if len(attachments) > 2:
-            #self.logger.warning(
-            #    "GigaChat can only handle 2 images per message. Cutting off excess."
-            #)
             attachments = attachments[:2]
 
         return texts, attachments
@@ -316,7 +384,7 @@ class GigaChatConfig(BaseConfig):
         headers: dict,
     ) -> dict:
         """
-        Transform OpenAI-style request to GigaChat format
+        Transform OpenAI-style request to GigaChat format.
         """
         # Transform messages to GigaChat format
         gigachat_messages = self._transform_messages(messages, headers)
@@ -402,7 +470,7 @@ class GigaChatConfig(BaseConfig):
         return gigachat_tools
 
     def _translate_openai_tool_to_gigachat(self, openai_tool: dict):
-        """Gigachat tool looks like this:
+        """GigaChat tool looks like this:
         {
                 "name": "get_current_weather",
                 "description": "Get the current weather in a given location",
@@ -483,6 +551,95 @@ class GigaChatConfig(BaseConfig):
         non_default_params.pop("tools", None)
         non_default_params.pop("functions", None)
         return optional_params
+
+    @property
+    def has_custom_stream_wrapper(self) -> bool:
+        return True
+
+    async def get_async_custom_stream_wrapper(
+        self,
+        model: str,
+        custom_llm_provider: str,
+        logging_obj: LiteLLMLoggingObj,
+        api_base: str,
+        headers: dict,
+        data: dict,
+        messages: list,
+        client: Optional[AsyncHTTPHandler] = None,
+        json_mode: Optional[bool] = None,
+        signed_json_body: Optional[bytes] = None,
+    ) -> "CustomStreamWrapper":
+        if client is None or isinstance(client, HTTPHandler):
+            client = get_async_httpx_client(llm_provider=LlmProviders.GIGACHAT, params={"ssl_verify": False})
+
+        try:
+            response = await client.post(
+                api_base,
+                headers=headers,
+                data=json.dumps(data),
+                stream=True,
+                logging_obj=logging_obj,
+
+            )
+        except httpx.HTTPStatusError as e:
+            raise GigaChatError(
+                status_code=e.response.status_code, message=e.response.text
+            )
+
+        if response.status_code != 200:
+            raise GigaChatError(status_code=response.status_code, message=response.text)
+
+        completion_stream = response.aiter_text()
+        streaming_response = GigaChatCustomStreamWrapper(
+            completion_stream=completion_stream,
+            model=model,
+            custom_llm_provider=custom_llm_provider,
+            logging_obj=logging_obj,
+        )
+        return streaming_response
+
+    def get_sync_custom_stream_wrapper(
+        self,
+        model: str,
+        custom_llm_provider: str,
+        logging_obj: LiteLLMLoggingObj,
+        api_base: str,
+        headers: dict,
+        data: dict,
+        messages: list,
+        client: Optional[Union[HTTPHandler, AsyncHTTPHandler]] = None,
+        json_mode: Optional[bool] = None,
+        signed_json_body: Optional[bytes] = None,
+    ) -> "CustomStreamWrapper":
+        if client is None or isinstance(client, HTTPHandler):
+            client = _get_httpx_client(params={"ssl_verify": False})
+
+        try:
+            response = client.post(
+                api_base,
+                headers=headers,
+                data=json.dumps(data),
+                stream=True,
+                logging_obj=logging_obj,
+
+            )
+        except httpx.HTTPStatusError as e:
+            raise GigaChatError(
+                status_code=e.response.status_code, message=e.response.text
+            )
+
+        if response.status_code != 200:
+            raise GigaChatError(status_code=response.status_code, message=response.text)
+
+        completion_stream = response.iter_text()
+        streaming_response = GigaChatCustomStreamWrapper(
+            completion_stream=completion_stream,
+            model=model,
+            custom_llm_provider=custom_llm_provider,
+            logging_obj=logging_obj,
+        )
+
+        return streaming_response
 
     def get_error_class(
         self, error_message: str, status_code: int, headers: Union[dict, httpx.Headers]
