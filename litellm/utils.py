@@ -7162,6 +7162,8 @@ class ProviderConfigManager:
             return litellm.BasetenConfig()
         elif litellm.LlmProviders.VOLCENGINE == provider:
             return litellm.VolcEngineConfig()
+        elif litellm.LlmProviders.GIGACHAT == provider:
+            return litellm.GigaChatConfig()
         elif litellm.LlmProviders.TEXT_COMPLETION_CODESTRAL == provider:
             return litellm.CodestralTextCompletionConfig()
         elif litellm.LlmProviders.SAMBANOVA == provider:
@@ -7261,6 +7263,12 @@ class ProviderConfigManager:
             )
 
             return VolcEngineEmbeddingConfig()
+
+        elif litellm.LlmProviders.GIGACHAT == provider:
+            from litellm.llms.gigachat.embedding.transformation import (
+                GigaChatEmbeddingConfig
+            )
+            return GigaChatEmbeddingConfig()
         elif litellm.LlmProviders.OVHCLOUD == provider:
             return litellm.OVHCloudEmbeddingConfig()
         elif litellm.LlmProviders.COMETAPI == provider:

@@ -1,3 +1,5 @@
+import time
+import uuid
 from typing import Any, List, Optional, Union
 
 import httpx
@@ -10,9 +12,6 @@ from litellm.llms.base_llm.embedding.transformation import (
 )
 from litellm.types.llms.openai import AllEmbeddingInputValues
 from litellm.types.utils import EmbeddingResponse
-from litellm.utils import ModelResponse
-
-from ..common_utils import GigaChatError
 
 
 class GigaChatEmbeddingConfig(BaseEmbeddingConfig):
@@ -22,6 +21,7 @@ class GigaChatEmbeddingConfig(BaseEmbeddingConfig):
 
     def __init__(self):
         super().__init__()
+        self._token_cache: dict[str, Any] = {"token": None, "expires_at": 0}
 
     @property
     def custom_llm_provider(self) -> Optional[str]:
@@ -51,73 +51,92 @@ class GigaChatEmbeddingConfig(BaseEmbeddingConfig):
         if api_key is None:
             raise ValueError("GIGACHAT_API_KEY not found and OAuth credentials not provided")
 
-        # Set default API base if not provided
-        if api_base is None:
-            api_base = litellm.get_secret_str("GIGACHAT_API_BASE") or "https://gigachat.devices.sberbank.ru/api/v1/embeddings"
-
         headers = {
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
+            "User-Agent": "GigaChat-python-lib",
             **headers,
         }
 
         return headers
 
+    @staticmethod
+    def _check_timestamp_unit(timestamp):
+        """In login+password auth expires_at is in seconds, while in scope+cred in milliseconds"""
+        if len(str(timestamp)) == 10:
+            return "seconds"
+        else:
+            return "milliseconds"
+
+    def _is_token_expired(self) -> bool:
+        """Check if cached OAuth token is expired or missing."""
+        now = time.time() if self._check_timestamp_unit(self._token_cache["expires_at"]) == "seconds" \
+            else time.time() * 1000
+        return not self._token_cache["token"] or now >= self._token_cache["expires_at"]
+
     def _get_oauth_token(self) -> Optional[str]:
         """
-        Get OAuth token using credentials+scope or username+password
+        Get or refresh OAuth token using either:
+        - username/password (returns tok + exp)
+        - client credentials (returns access_token + expires_at)
         """
+
+        # Reuse cached token if valid
+        if not self._is_token_expired():
+            return self._token_cache["token"]
+
+        import httpx
         import litellm
 
-        auth_url = litellm.get_secret_str("GIGACHAT_AUTH_URL") or "https://ngw.devices.sberbank.ru:9443/api/v2/oauth"
+        auth_url = litellm.get_secret_str("GIGACHAT_AUTH_URL") or \
+                   "https://ngw.devices.sberbank.ru:9443/api/v2/oauth"
 
         try:
-            import httpx
-
-            # Method 1: Using credentials and scope
-            credentials = litellm.get_secret_str("GIGACHAT_CREDENTIALS") or litellm.get_secret_str("GIGACHAT_API_KEY")
+            username = litellm.get_secret_str("GIGACHAT_USERNAME")
+            password = litellm.get_secret_str("GIGACHAT_PASSWORD")
             scope = litellm.get_secret_str("GIGACHAT_SCOPE") or "GIGACHAT_API_PERS"
+            credentials = litellm.get_secret_str("GIGACHAT_CREDENTIALS")
 
-            if credentials:
-                data = {
-                    "scope": scope
-                }
-                # Try credentials first (client_id:client_secret format)
-                if ":" in credentials:
-                    client_id, client_secret = credentials.split(":", 1)
-                    data.update({
-                        "client_id": client_id,
-                        "client_secret": client_secret
-                    })
-                else:
-                    # Single credential (API key)
-                    data.update({
-                        "client_id": credentials,
-                        "client_secret": ""  # Empty for API key auth
-                    })
+            if username and password:
+                # Username/password OAuth flow
+                response = httpx.post(
+                    auth_url,
+                    auth=(username, password),
+                    timeout=30,
+                    verify=False,
+                )
+                response.raise_for_status()
+                data = response.json()
+                token = data.get("tok")
+                expires_at = float(data.get("exp", 0))
 
             else:
-                # Method 2: Using username and password
-                username = litellm.get_secret_str("GIGACHAT_USERNAME")
-                password = litellm.get_secret_str("GIGACHAT_PASSWORD")
-
-                if not username or not password:
-                    return None
-
-                data = {
-                    "scope": scope,
-                    "username": username,
-                    "password": password
+                # Client credentials flow
+                if not credentials:
+                    raise ValueError("Missing GIGACHAT_CREDENTIALS or username/password")
+                headers = {
+                    "User-Agent": "GigaChat-python-lib",
+                    "RqUID": str(uuid.uuid4()),
+                    "Authorization": f"Basic {credentials}",
                 }
+                data = {"scope": scope}
+                response = httpx.post(auth_url, headers=headers, data=data, timeout=30, verify=False)
+                response.raise_for_status()
+                data = response.json()
+                token = data.get("access_token")
+                expires_at = float(data.get("expires_at", 0))
 
-            response = httpx.post(auth_url, data=data, timeout=30)
-            response.raise_for_status()
+            if not token:
+                raise ValueError("OAuth did not return a token")
 
-            token_data = response.json()
-            return token_data.get("access_token")
+            # Cache the token
+            self._token_cache["token"] = token
+            self._token_cache["expires_at"] = expires_at or (time.time() + 1800)
+
+            return token
 
         except Exception as e:
-            print(f"Failed to get OAuth token: {e}")
+            print(f"[GigaChat] OAuth token fetch failed: {e}")
             return None
 
     def transform_embedding_request(
@@ -130,17 +149,14 @@ class GigaChatEmbeddingConfig(BaseEmbeddingConfig):
         """
         Transform OpenAI-style embedding request to GigaChat format
         """
-        # Build request body for GigaChat embeddings API
+        if isinstance(input, list) and (
+            isinstance(input[0], list) or isinstance(input[0], int)
+        ):
+            raise ValueError("Input must be a list of strings")
         request_body = {
             "model": model,
             "input": input,
         }
-
-        # Add optional parameters
-        for param, value in optional_params.items():
-            if param == "encoding_format":
-                request_body["encoding_format"] = value
-            # Add other parameters as needed based on GigaChat API
 
         return request_body
 
@@ -192,10 +208,7 @@ class GigaChatEmbeddingConfig(BaseEmbeddingConfig):
         """
         Get supported OpenAI parameters for GigaChat embeddings
         """
-        return [
-            "encoding_format",
-            # Add more parameters if GigaChat API supports them
-        ]
+        return []
 
     def map_openai_params(
         self,
@@ -207,11 +220,7 @@ class GigaChatEmbeddingConfig(BaseEmbeddingConfig):
         """
         Map OpenAI parameters to GigaChat format
         """
-        for param, value in non_default_params.items():
-            if param == "encoding_format":
-                optional_params["encoding_format"] = value
-
-        return optional_params
+        return {}
 
     def get_error_class(
         self, error_message: str, status_code: int, headers: Union[dict, httpx.Headers]
