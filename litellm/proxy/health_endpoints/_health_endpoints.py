@@ -47,7 +47,7 @@ services = Union[
         "datadog",
         "generic_api",
         "arize",
-        "sqs"
+        "sqs",
     ],
     str,
 ]
@@ -119,7 +119,7 @@ async def health_services_endpoint(  # noqa: PLR0915
             "datadog",
             "generic_api",
             "arize",
-            "sqs"
+            "sqs",
         ]:
             raise HTTPException(
                 status_code=400,
@@ -202,6 +202,7 @@ async def health_services_endpoint(  # noqa: PLR0915
             )
         elif service == "sqs":
             from litellm.integrations.sqs import SQSLogger
+
             sqs_logger = SQSLogger()
             response = await sqs_logger.async_health_check()
             return {

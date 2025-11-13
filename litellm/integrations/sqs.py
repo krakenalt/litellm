@@ -375,10 +375,15 @@ class SQSLogger(CustomBatchLogger, BaseAWSLLM):
             from litellm.litellm_core_utils.litellm_logging import (
                 create_dummy_standard_logging_payload,
             )
+
             # Create a minimal standard logging payload
-            standard_logging_object: StandardLoggingPayload = create_dummy_standard_logging_payload()
+            standard_logging_object: StandardLoggingPayload = (
+                create_dummy_standard_logging_payload()
+            )
             # Attempt to send a single message
             await self.async_send_message(standard_logging_object)
             return IntegrationHealthCheckStatus(status="healthy", error_message=None)
         except Exception as e:
-            return IntegrationHealthCheckStatus(status="unhealthy", error_message=str(e))
+            return IntegrationHealthCheckStatus(
+                status="unhealthy", error_message=str(e)
+            )

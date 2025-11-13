@@ -680,5 +680,7 @@ class MistralChatResponseIterator(OpenAIChatCompletionStreamingHandler):
                 text_segments.append(block.get("text", ""))
 
         normalized_text = "".join(text_segments) if text_segments else None
-        reasoning_content = "\n".join(reasoning_segments) if reasoning_segments else None
+        reasoning_content = (
+            "\n".join(reasoning_segments) if reasoning_segments else None
+        )
         return normalized_text, thinking_blocks, reasoning_content

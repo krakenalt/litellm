@@ -2817,7 +2817,9 @@ class ProxyConfig:
                 for k, v in _litellm_params.items():
                     if isinstance(v, str):
                         # decrypt value - returns original value if decryption fails or no key is set
-                        _value = decrypt_value_helper(value=v, key=k, return_original_value=True)
+                        _value = decrypt_value_helper(
+                            value=v, key=k, return_original_value=True
+                        )
                         _litellm_params[k] = _value
                 _litellm_params = LiteLLM_Params(**_litellm_params)
 
@@ -9052,7 +9054,9 @@ async def update_config(config_info: ConfigYAML):  # noqa: PLR0915
                 if isinstance(
                     config["litellm_settings"]["success_callback"], list
                 ) and isinstance(updated_litellm_settings["success_callback"], list):
-                    updated_success_callbacks_normalized = normalize_callback_names(updated_litellm_settings["success_callback"])
+                    updated_success_callbacks_normalized = normalize_callback_names(
+                        updated_litellm_settings["success_callback"]
+                    )
                     combined_success_callback = (
                         config["litellm_settings"]["success_callback"]
                         + updated_success_callbacks_normalized

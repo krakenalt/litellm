@@ -251,14 +251,14 @@ VECTOR_STORE_OPENAI_PARAMS = Literal[
 ]
 
 
-
 @dataclass
 class VectorStoreToolParams:
     """Parameters extracted from a file_search tool definition"""
+
     filters: Optional[Dict] = None
     max_num_results: Optional[int] = None
     ranking_options: Optional[Dict] = None
-    
+
     def to_dict(self) -> Dict:
         """Convert to dict, excluding None values"""
         return {

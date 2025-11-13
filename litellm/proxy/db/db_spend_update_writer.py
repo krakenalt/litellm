@@ -1069,8 +1069,10 @@ class DBSpendUpdateWriter:
                                 ] = transaction.get("cache_creation_input_tokens", 0)
 
                             if entity_type == "tag" and "request_id" in transaction:
-                                common_data["request_id"] = transaction.get("request_id")
-                            
+                                common_data["request_id"] = transaction.get(
+                                    "request_id"
+                                )
+
                             # Create update data structure
                             update_data = {
                                 "prompt_tokens": {

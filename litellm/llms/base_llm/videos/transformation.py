@@ -143,13 +143,13 @@ class BaseVideoConfig(ABC):
         Async transform video content download response to bytes.
         Optional method - providers can override if they need async transformations
         (e.g., RunwayML for downloading video from CloudFront URL).
-        
+
         Default implementation falls back to sync transform_video_content_response.
-        
+
         Args:
             raw_response: Raw HTTP response
             logging_obj: Logging object
-            
+
         Returns:
             Video content as bytes
         """

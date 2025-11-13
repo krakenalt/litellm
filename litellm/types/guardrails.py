@@ -16,7 +16,6 @@ from litellm.types.proxy.guardrails.guardrail_hooks.ibm import (
 )
 
 
-
 """
 Pydantic object defining how to set guardrails on litellm proxy
 
@@ -51,7 +50,7 @@ class SupportedGuardrailIntegrations(Enum):
     OPENAI_MODERATION = "openai_moderation"
     NOMA = "noma"
     TOOL_PERMISSION = "tool_permission"
-    ZSCALER_AI_GUARD = "zscaler_ai_guard"    
+    ZSCALER_AI_GUARD = "zscaler_ai_guard"
     JAVELIN = "javelin"
     ENKRYPTAI = "enkryptai"
     IBM_GUARDRAILS = "ibm_guardrails"
@@ -432,7 +431,7 @@ class ZscalerAIGuardConfigModel(BaseModel):
 
     policy_id: Optional[int] = Field(
         default=None,
-        description="Policy ID for Zscaler AI Guard. Can also be set via ZSCALER_AI_GUARD_POLICY_ID environment variable"
+        description="Policy ID for Zscaler AI Guard. Can also be set via ZSCALER_AI_GUARD_POLICY_ID environment variable",
     )
     send_user_api_key_alias: Optional[bool] = Field(
         default=False, description="Whether to send user_API_key_alias in headers"
@@ -443,6 +442,7 @@ class ZscalerAIGuardConfigModel(BaseModel):
     send_user_api_key_team_id: Optional[bool] = Field(
         default=False, description="Whether to send user_API_key_team_id in headers"
     )
+
 
 class JavelinGuardrailConfigModel(BaseModel):
     """Configuration parameters for the Javelin guardrail"""
@@ -612,7 +612,7 @@ class LitellmParams(
     GraySwanGuardrailConfigModel,
     NomaGuardrailConfigModel,
     ToolPermissionGuardrailConfigModel,
-    ZscalerAIGuardConfigModel, 
+    ZscalerAIGuardConfigModel,
     JavelinGuardrailConfigModel,
     ContentFilterConfigModel,
     BaseLitellmParams,
