@@ -41,6 +41,7 @@ class GigaChatEmbeddingConfig(BaseEmbeddingConfig):
         Validate and prepare environment for GigaChat embedding API calls
         """
         import litellm
+
         if api_key is None:
             api_key = litellm.get_secret_str("GIGACHAT_API_KEY")
 
@@ -49,7 +50,9 @@ class GigaChatEmbeddingConfig(BaseEmbeddingConfig):
             api_key = self._get_oauth_token()
 
         if api_key is None:
-            raise ValueError("GIGACHAT_API_KEY not found and OAuth credentials not provided")
+            raise ValueError(
+                "GIGACHAT_API_KEY not found and OAuth credentials not provided"
+            )
 
         headers = {
             "Authorization": f"Bearer {api_key}",
@@ -70,8 +73,11 @@ class GigaChatEmbeddingConfig(BaseEmbeddingConfig):
 
     def _is_token_expired(self) -> bool:
         """Check if cached OAuth token is expired or missing."""
-        now = time.time() if self._check_timestamp_unit(self._token_cache["expires_at"]) == "seconds" \
+        now = (
+            time.time()
+            if self._check_timestamp_unit(self._token_cache["expires_at"]) == "seconds"
             else time.time() * 1000
+        )
         return not self._token_cache["token"] or now >= self._token_cache["expires_at"]
 
     def _get_oauth_token(self) -> Optional[str]:
@@ -88,8 +94,10 @@ class GigaChatEmbeddingConfig(BaseEmbeddingConfig):
         import httpx
         import litellm
 
-        auth_url = litellm.get_secret_str("GIGACHAT_AUTH_URL") or \
-                   "https://ngw.devices.sberbank.ru:9443/api/v2/oauth"
+        auth_url = (
+            litellm.get_secret_str("GIGACHAT_AUTH_URL")
+            or "https://ngw.devices.sberbank.ru:9443/api/v2/oauth"
+        )
 
         try:
             username = litellm.get_secret_str("GIGACHAT_USERNAME")
@@ -113,14 +121,18 @@ class GigaChatEmbeddingConfig(BaseEmbeddingConfig):
             else:
                 # Client credentials flow
                 if not credentials:
-                    raise ValueError("Missing GIGACHAT_CREDENTIALS or username/password")
+                    raise ValueError(
+                        "Missing GIGACHAT_CREDENTIALS or username/password"
+                    )
                 headers = {
                     "User-Agent": "GigaChat-python-lib",
                     "RqUID": str(uuid.uuid4()),
                     "Authorization": f"Basic {credentials}",
                 }
                 data = {"scope": scope}
-                response = httpx.post(auth_url, headers=headers, data=data, timeout=30, verify=False)
+                response = httpx.post(
+                    auth_url, headers=headers, data=data, timeout=30, verify=False
+                )
                 response.raise_for_status()
                 data = response.json()
                 token = data.get("access_token")
@@ -177,7 +189,9 @@ class GigaChatEmbeddingConfig(BaseEmbeddingConfig):
         try:
             response_json = raw_response.json()
         except Exception as e:
-            raise ValueError(f"Failed to parse GigaChat embedding response as JSON: {raw_response.text}, Error: {str(e)}")
+            raise ValueError(
+                f"Failed to parse GigaChat embedding response as JSON: {raw_response.text}, Error: {str(e)}"
+            )
 
         # Transform GigaChat response to OpenAI format
         if "data" in response_json:
@@ -185,10 +199,12 @@ class GigaChatEmbeddingConfig(BaseEmbeddingConfig):
             data = response_json["data"]
         else:
             # Transform from GigaChat format to OpenAI format
-            data = [{
-                "embedding": response_json.get("embedding", []),
-                "index": 0,
-            }]
+            data = [
+                {
+                    "embedding": response_json.get("embedding", []),
+                    "index": 0,
+                }
+            ]
 
         # Update model response
         model_response.data = data
@@ -226,4 +242,7 @@ class GigaChatEmbeddingConfig(BaseEmbeddingConfig):
         self, error_message: str, status_code: int, headers: Union[dict, httpx.Headers]
     ) -> BaseLLMException:
         from ..common_utils import GigaChatError
-        return GigaChatError(status_code=status_code, message=error_message, headers=headers)
+
+        return GigaChatError(
+            status_code=status_code, message=error_message, headers=headers
+        )

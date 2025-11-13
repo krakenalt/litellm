@@ -8,6 +8,7 @@ class FewShotExample(BaseModel):
     """Запрос пользователя"""
     params: Dict[str, Any]
 
+
 class FunctionParametersProperty(BaseModel):
     """Функция, которая может быть вызвана моделью"""
 
@@ -21,6 +22,7 @@ class FunctionParametersProperty(BaseModel):
     """Возможные значения enum"""
     properties: Optional[Dict[Any, "FunctionParametersProperty"]] = None
 
+
 class FunctionParameters(BaseModel):
     """Функция, которая может быть вызвана моделью"""
 
@@ -30,6 +32,7 @@ class FunctionParameters(BaseModel):
     """Описание функции"""
     required: Optional[List[str]] = None
     """Список обязательных параметров"""
+
 
 class Function(BaseModel):
     """Функция, которая может быть вызвана моделью"""
@@ -43,6 +46,7 @@ class Function(BaseModel):
     few_shot_examples: Optional[List[FewShotExample]] = None
     return_parameters: Optional[Dict[Any, Any]] = None
     """Список возвращаемых параметров функции"""
+
 
 class FunctionCall(BaseModel):
     """Вызов функции"""
