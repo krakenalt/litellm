@@ -1,5 +1,4 @@
 import base64
-import hashlib
 import json
 import re
 import time
@@ -23,7 +22,6 @@ from litellm.utils import ModelResponse
 
 if TYPE_CHECKING:
     from litellm.litellm_core_utils.litellm_logging import Logging as _LiteLLMLoggingObj
-    from litellm.types.llms.openai import ChatCompletionToolParam
 
     LiteLLMLoggingObj = _LiteLLMLoggingObj
 else:
@@ -31,12 +29,12 @@ else:
 
 class GigaChatCustomStreamWrapper(CustomStreamWrapper):
 
-    def handle_gigachat_chunk(self, chunk: Any):
+    @staticmethod
+    def handle_gigachat_chunk(chunk: Any):
         """
         Process a raw SSE chunk. Supports cases where a single chunk contains multiple `data:` lines.
         Returns one event per call and buffers the rest in an internal queue.
         """
-        # If there are already parsed events in the queue - return the next one
         if isinstance(chunk, str):
             for raw_line in chunk.splitlines():
                 if not raw_line:
@@ -65,8 +63,6 @@ class GigaChatCustomStreamWrapper(CustomStreamWrapper):
 
             # Normal data event
             model_response = ModelResponseStream(**data_json)
-            # Extract text content from delta
-            delta_content = ""
             try:
                 delta_content = (
                     model_response.choices[0].delta.get("content", "") or ""
@@ -172,16 +168,11 @@ class GigaChatConfig(BaseConfig):
         """
         if api_key is None:
             api_key = litellm.get_secret_str("GIGACHAT_API_KEY")
-
-        # If no API key, try to get one via OAuth
         if api_key is None:
             api_key = self._get_oauth_token()
 
         if api_key is None:
             raise ValueError("GIGACHAT_API_KEY not found and OAuth credentials not provided")
-
-        if api_base is None:
-            api_base = litellm.get_secret_str("GIGACHAT_API_BASE") or "https://gigachat.devices.sberbank.ru/api/v1/chat/completions"
 
         headers = {
             "Authorization": f"Bearer {api_key}",
@@ -192,9 +183,18 @@ class GigaChatConfig(BaseConfig):
 
         return headers
 
+    @staticmethod
+    def _check_timestamp_unit(timestamp):
+        """In login+password auth expires_at is in seconds, while in scope+cred in milliseconds"""
+        if len(str(timestamp)) == 10:
+            return "seconds"
+        else:
+            return "milliseconds"
+
     def _is_token_expired(self) -> bool:
         """Check if cached OAuth token is expired or missing."""
-        now = time.time()
+        now = time.time() if self._check_timestamp_unit(self._token_cache["expires_at"]) == "seconds" \
+            else time.time() * 1000
         return not self._token_cache["token"] or now >= self._token_cache["expires_at"]
 
     def _get_oauth_token(self) -> Optional[str]:
@@ -254,7 +254,7 @@ class GigaChatConfig(BaseConfig):
 
             # Cache the token
             self._token_cache["token"] = token
-            self._token_cache["expires_at"] = expires_at or (time.time() + 3600)
+            self._token_cache["expires_at"] = expires_at or (time.time() + 1800)
 
             return token
 
@@ -268,7 +268,6 @@ class GigaChatConfig(BaseConfig):
         attachment_count = 0
 
         for i, message in enumerate(messages):
-            # Remove unused fields
             message.pop("name", None)
 
             # Normalize roles
@@ -288,7 +287,6 @@ class GigaChatConfig(BaseConfig):
             # Handle content
             if message.get("content") is None:
                 message["content"] = ""
-
             # Handle tool_calls
             if "tool_calls" in message and message["tool_calls"]:
                 message["function_call"] = message["tool_calls"][0]["function"]
@@ -296,7 +294,7 @@ class GigaChatConfig(BaseConfig):
                     message["function_call"]["arguments"] = json.loads(
                         message["function_call"]["arguments"]
                     )
-                except json.JSONDecodeError as e:
+                except json.JSONDecodeError:
                     pass
             if isinstance(message["content"], list):
                 texts, attachments = self._process_content_parts(message["content"], headers)
@@ -309,7 +307,8 @@ class GigaChatConfig(BaseConfig):
             self._limit_attachments(transformed_messages, max_total_attachments=10)
         return transformed_messages
 
-    def _limit_attachments(self, messages: List[Dict], max_total_attachments: int = 10) -> None:
+    @staticmethod
+    def _limit_attachments(messages: List[Dict], max_total_attachments: int = 10) -> None:
         """
         Limits the total number of attachments across all messages to max_total_attachments.
         Trims extra attachments while iterating messages in order of appearance.
@@ -328,25 +327,43 @@ class GigaChatConfig(BaseConfig):
             else:
                 remaining -= len(attachments)
 
-    def upload_image(self, image_url: str, headers: dict) -> Optional[str]:
-        """Uploads an image for use with GigaChat and returns a file_id (if implemented)."""
-        base64_matches = re.search(r"data:(.+);(.+),(.+)", image_url)
+    @staticmethod
+    def upload_image(image_url: str, headers: dict) -> Optional[str]:
+        """Uploads image to GigaChat and returns file_id."""
+        base64_match = re.search(r"data:(.+);base64,(.+)", image_url)
+        if base64_match:
+            content_type = base64_match.group(1) or ""
+            image_bytes = base64.b64decode(base64_match.group(2))
+        else:
+            resp = httpx.get(image_url, timeout=30)
+            resp.raise_for_status()
+            content_type = resp.headers.get("content-type", "") or ""
+            image_bytes = resp.content
+
+        api_base = litellm.get_secret_str("GIGACHAT_API_BASE") or "https://gigachat.devices.sberbank.ru/api/v1/chat/completions"
+        files_url = api_base.replace("/chat/completions", "/files")
         try:
-            if not base64_matches:
-                response = httpx.get(image_url, timeout=30)
-                content_type = response.headers.get("content-type", "")
-                if not content_type.startswith("image/"):
-                    return None
-            else:
-                content_type, type_, image_str = base64_matches.groups()
-                if type_ != "base64":
-                    return None
-                # Validate base64 — do not upload, only check correctness
-                _ = base64.b64decode(image_str)
-            # Stub: return None if upload integration is not configured
-            return None
-        except:
-            pass
+            ext = content_type.split("/")[-1] if "/" in content_type else "jpg"
+            if not ext:
+                ext = "jpg"
+        except Exception:
+            ext = "jpg"
+        filename = f"{uuid.uuid4()}.{ext}"
+        files = {"file": (filename, image_bytes)}
+        headers.pop('Content-Type')
+        resp = httpx.post(
+            files_url,
+            headers=headers,
+            files=files,
+            data={"purpose": "general"},
+            timeout=30,
+            verify=False,
+        )
+        resp.raise_for_status()
+
+        data = resp.json()
+        file_id: Optional[str] =  data.get("id")
+        return file_id
 
     def _process_content_parts(
             self, content_parts: List[Dict], headers: dict
@@ -354,7 +371,6 @@ class GigaChatConfig(BaseConfig):
         """Processes content parts (text and images)."""
         texts = []
         attachments = []
-
         for content_part in content_parts:
             if content_part.get("type") == "text":
                 texts.append(content_part.get("text", ""))
@@ -412,7 +428,8 @@ class GigaChatConfig(BaseConfig):
                                                        **value["json_schema"]}
         return request_body
 
-    def _process_function_call(self, message: dict):
+    @staticmethod
+    def _process_function_call(message: dict):
         arguments = json.dumps(
             message["function_call"]["arguments"],
             ensure_ascii=False,
@@ -469,7 +486,8 @@ class GigaChatConfig(BaseConfig):
 
         return gigachat_tools
 
-    def _translate_openai_tool_to_gigachat(self, openai_tool: dict):
+    @staticmethod
+    def _translate_openai_tool_to_gigachat(openai_tool: dict):
         """GigaChat tool looks like this:
         {
                 "name": "get_current_weather",
