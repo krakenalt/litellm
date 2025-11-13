@@ -277,8 +277,6 @@ class GigaChatConfig(BaseConfig):
         attachment_count = 0
 
         for i, message in enumerate(messages):
-            message.pop("name", None)
-
             # Normalize roles
             if message["role"] == "developer":
                 message["role"] = "system"
@@ -433,7 +431,7 @@ class GigaChatConfig(BaseConfig):
                 request_body["stream"] = value
             elif param == "tools" or param == "functions":
                 gigachat_tools = self._construct_gigachat_tool(
-                    tools=optional_params["tools"]
+                    tools=optional_params[param]
                 )
                 request_body["functions"] = gigachat_tools
             elif param == "response_format":

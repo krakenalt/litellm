@@ -145,7 +145,7 @@ class GigaChatEmbeddingConfig(BaseEmbeddingConfig):
     def transform_embedding_request(
         self,
         model: str,
-        input: List[AllEmbeddingInputValues],
+        input: AllEmbeddingInputValues,
         optional_params: dict,
         headers: dict,
     ) -> dict:

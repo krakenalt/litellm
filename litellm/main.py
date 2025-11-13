@@ -4811,19 +4811,19 @@ def embedding(  # noqa: PLR0915
                 or get_secret_str("GIGACHAT_API_BASE")
                 or "https://gigachat.devices.sberbank.ru/api/v1/chat/completions"
             )
+            litellm_params_dict["ssl_verify"] = False
             response = base_llm_http_handler.embedding(
                 model=model,
                 input=input,
-                custom_llm_provider=custom_llm_provider,
                 api_base=api_base,
                 api_key=api_key,
                 logging_obj=logging,
                 timeout=timeout,
                 model_response=EmbeddingResponse(),
                 optional_params=optional_params,
-                client=client,
                 aembedding=aembedding,
-                litellm_params={},
+                custom_llm_provider=custom_llm_provider,
+                litellm_params=litellm_params_dict
             )
         elif custom_llm_provider == "cometapi":
             api_key = (
