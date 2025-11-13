@@ -3626,7 +3626,7 @@ def completion(  # type: ignore # noqa: PLR0915
                 api_base
                 or litellm.api_base
                 or get_secret_str("GIGACHAT_API_BASE")
-                or "https://gigachat.devices.sberbank.ru/api/v1/chat/completions"
+                or "https://gigachat.devices.sberbank.ru/api/"
             )
             litellm_params["ssl_verify"] = False
             response = base_llm_http_handler.completion(
@@ -4809,7 +4809,7 @@ def embedding(  # noqa: PLR0915
                 api_base
                 or litellm.api_base
                 or get_secret_str("GIGACHAT_API_BASE")
-                or "https://gigachat.devices.sberbank.ru/api/v1/chat/completions"
+                or "https://gigachat.devices.sberbank.ru/api/"
             )
             litellm_params_dict["ssl_verify"] = False
             response = base_llm_http_handler.embedding(

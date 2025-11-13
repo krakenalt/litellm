@@ -1,6 +1,8 @@
+import re
 import time
 import uuid
 from typing import Any, List, Optional, Union
+from urllib.parse import urljoin
 
 import httpx
 from litellm.llms.base_llm.chat.transformation import BaseLLMException
@@ -24,6 +26,20 @@ class GigaChatEmbeddingConfig(BaseEmbeddingConfig):
     @property
     def custom_llm_provider(self) -> Optional[str]:
         return "gigachat"
+
+    def get_complete_url(
+        self,
+        api_base: Optional[str],
+        api_key: Optional[str],
+        model: str,
+        optional_params: dict,
+        litellm_params: dict,
+        stream: Optional[bool] = None,
+    ) -> str:
+        match = re.search(r'/v(\d+)/', api_base)
+        if not match:
+            api_base = urljoin(api_base, "v1/embeddings")
+        return api_base
 
     def validate_environment(
         self,
@@ -179,6 +195,7 @@ class GigaChatEmbeddingConfig(BaseEmbeddingConfig):
         """
         try:
             response_json = raw_response.json()
+            print(response_json)
         except Exception as e:
             raise ValueError(
                 f"Failed to parse GigaChat embedding response as JSON: {raw_response.text}, Error: {str(e)}"
@@ -189,7 +206,7 @@ class GigaChatEmbeddingConfig(BaseEmbeddingConfig):
         """
         Get supported OpenAI parameters for GigaChat embeddings
         """
-        return []
+        return ["encoding_format"]
 
     def map_openai_params(
         self,

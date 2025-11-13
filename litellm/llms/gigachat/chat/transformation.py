@@ -4,6 +4,8 @@ import re
 import time
 import traceback
 from typing import Optional, Tuple, Union, Type, List, Any, TYPE_CHECKING, Dict
+from urllib.parse import urljoin
+
 import httpx
 from pydantic import BaseModel
 
@@ -187,6 +189,21 @@ class GigaChatConfig(BaseConfig):
         }
 
         return headers
+
+    def get_complete_url(
+        self,
+        api_base: Optional[str],
+        api_key: Optional[str],
+        model: str,
+        optional_params: dict,
+        litellm_params: dict,
+        stream: Optional[bool] = None,
+    ) -> str:
+        match = re.search(r'/v(\d+)/', api_base)
+        if not match:
+            api_base = urljoin(api_base, "v1/chat/completions")
+
+        return api_base
 
     @staticmethod
     def _check_timestamp_unit(timestamp):
