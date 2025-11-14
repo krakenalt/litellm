@@ -380,7 +380,11 @@ class GigaChatConfig(BaseConfig):
                     litellm.get_secret_str("GIGACHAT_API_BASE")
                     or "https://gigachat.devices.sberbank.ru/api/v1/"
             )
-            files_url = urljoin(api_base, "files")
+            match = re.search(r'/v(\d+)/', api_base)
+            if not match:
+                files_url = urljoin(api_base, "v1/files")
+            else:
+                files_url = urljoin(api_base, "files")
 
             ext = "jpg"
             try:
