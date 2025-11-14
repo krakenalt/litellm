@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import json
 import re
@@ -356,45 +357,63 @@ class GigaChatConfig(BaseConfig):
                 remaining -= len(attachments)
 
     @staticmethod
-    def upload_image(image_url: str, headers: dict) -> Optional[str]:
-        """Uploads image to GigaChat and returns file_id."""
-        base64_match = re.search(r"data:(.+);base64,(.+)", image_url)
-        if base64_match:
-            content_type = base64_match.group(1) or ""
-            image_bytes = base64.b64decode(base64_match.group(2))
-        else:
-            resp = httpx.get(image_url, timeout=30)
-            resp.raise_for_status()
-            content_type = resp.headers.get("content-type", "") or ""
-            image_bytes = resp.content
+    async def upload_file_async(
+            image_url: str,
+            headers: dict,
+            filename: str | None = None
+    ) -> str | None:
+        """
+        Uploads image to GigaChat and returns file_id.
+        """
+        async with httpx.AsyncClient(timeout=30, verify=False) as client:
+            base64_match = re.search(r"data:(.+);base64,(.+)", image_url)
+            if base64_match:
+                content_type = base64_match.group(1) or ""
+                image_bytes = base64.b64decode(base64_match.group(2))
+            else:
+                resp = await client.get(image_url)
+                resp.raise_for_status()
+                content_type = resp.headers.get("content-type", "") or ""
+                image_bytes = resp.content
 
-        api_base = (
-            litellm.get_secret_str("GIGACHAT_API_BASE")
-            or "https://gigachat.devices.sberbank.ru/api/v1/chat/completions"
-        )
-        files_url = api_base.replace("/chat/completions", "/files")
-        try:
-            ext = content_type.split("/")[-1] if "/" in content_type else "jpg"
-            if not ext:
-                ext = "jpg"
-        except Exception:
+            api_base = (
+                    litellm.get_secret_str("GIGACHAT_API_BASE")
+                    or "https://gigachat.devices.sberbank.ru/api/v1/"
+            )
+            files_url = urljoin(api_base, "files")
+
             ext = "jpg"
-        filename = f"{uuid.uuid4()}.{ext}"
-        files = {"file": (filename, image_bytes)}
-        headers.pop("Content-Type")
-        resp = httpx.post(
-            files_url,
-            headers=headers,
-            files=files,
-            data={"purpose": "general"},
-            timeout=30,
-            verify=False,
-        )
-        resp.raise_for_status()
+            try:
+                ext = content_type.split("/")[-1] or "jpg"
+            except Exception:
+                pass
 
-        data = resp.json()
-        file_id: Optional[str] = data.get("id")
-        return file_id
+            filename = filename or f"{uuid.uuid4()}.{ext}"
+
+            files = {"file": (filename, image_bytes)}
+
+            clean_headers = {
+                k: v for k, v in headers.items()
+                if k.lower() != "content-type"
+            }
+
+            resp = await client.post(
+                files_url,
+                headers=clean_headers,
+                files=files,
+                data={"purpose": "general"},
+            )
+            resp.raise_for_status()
+
+            data = resp.json()
+            return data.get("id")
+
+    def upload_file(self, image_url: str, headers: dict, filename: str | None = None) -> Optional[str]:
+        """
+        Sync-safe wrapper around async upload.
+        This is used inside transform_request() which must stay sync.
+        """
+        return asyncio.run(self.upload_file_async(image_url, headers, filename))
 
     def _process_content_parts(
         self, content_parts: List[Dict], headers: dict
@@ -408,7 +427,15 @@ class GigaChatConfig(BaseConfig):
             elif content_part.get("type") == "image_url" and content_part.get(
                 "image_url"
             ):
-                file_id = self.upload_image(content_part["image_url"]["url"], headers)
+                file_id = self.upload_file(content_part["image_url"]["url"], headers)
+                if file_id:
+                    attachments.append(file_id)
+
+            elif content_part.get("type") == "file" and content_part.get("file"):
+                filename = content_part["file"].get("filename")
+                file_data = content_part["file"].get("file_data")
+                file_id = self.upload_file(file_data, headers, filename)
+                print(file_id)
                 if file_id:
                     attachments.append(file_id)
 
@@ -457,6 +484,7 @@ class GigaChatConfig(BaseConfig):
                         "type": "json_schema",
                         **value["json_schema"],
                     }
+
         return request_body
 
     @staticmethod
@@ -476,8 +504,9 @@ class GigaChatConfig(BaseConfig):
                 "function": function_call,
             }
         ]
-        if message.get("finish_reason") == "function_call":
-            message["finish_reason"] = "tool_calls"
+
+        message.pop("function_call")
+        message.pop("functions_state_id")
 
     def transform_response(
         self,
@@ -498,16 +527,16 @@ class GigaChatConfig(BaseConfig):
         """
         try:
             response_json = raw_response.json()
-            message = response_json["choices"][0]["message"]
-            if "function_call" in message:
-                message["function_call"]["arguments"] = json.dumps(
-                    message["function_call"]["arguments"]
-                )
-                self._process_function_call(message)
+            for choice in response_json["choices"]:
+                message = choice["message"]
+                if "function_call" in message:
+                    choice["finish_reason"] = "tool_calls"
+                    self._process_function_call(message)
         except Exception as e:
             raise ValueError(f"Failed to parse GigaChat response as JSON: {e}")
 
         return ModelResponse(**response_json)
+
 
     def _construct_gigachat_tool(self, tools: Optional[list] = None):
         if tools is None:
