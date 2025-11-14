@@ -435,7 +435,6 @@ class GigaChatConfig(BaseConfig):
                 filename = content_part["file"].get("filename")
                 file_data = content_part["file"].get("file_data")
                 file_id = self.upload_file(file_data, headers, filename)
-                print(file_id)
                 if file_id:
                     attachments.append(file_id)
 
